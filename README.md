@@ -9,7 +9,36 @@ Le prix apparaît dans une pastille `Ⓦ 39` en bas à gauche de l'image de chaq
 - `Ⓦ …` : chargement en cours
 - `Ⓦ ?` : erreur de chargement (réessaie en rechargeant la page)
 
-## Installation sur Android
+## Option 1 : l'application Android « WikiMasters Prix » (recommandé)
+
+Une petite application qui ouvre WikiMasters (directement sur ta collection) avec le prix moyen déjà affiché sur les cartes. Rien d'autre à installer.
+
+**Installer l'APK :**
+
+1. Récupère `app-release.apk` :
+   - onglet **Actions** du dépôt GitHub → dernière exécution « Compiler l'APK » → **Artifacts** → `WikiMastersPrix-apk` (fichier zip contenant l'APK) ;
+   - ou compile-le toi-même (voir plus bas).
+2. Ouvre le fichier sur ton téléphone. Android demande d'autoriser l'installation d'applications depuis cette source (Chrome, Fichiers…) : accepte.
+3. Lance **WikiMasters Prix** et connecte-toi une première fois (la vérification Cloudflare fonctionne normalement). La session est conservée ensuite.
+
+**Comportement :**
+
+- les liens du site restent dans l'application ; les liens externes (Wikipédia…) s'ouvrent dans ton navigateur ;
+- bouton retour = page précédente du site ;
+- une nouvelle version s'installe par-dessus l'ancienne sans perdre ta connexion (signature fixe dans `android/app/signature.keystore`, volontairement non secrète).
+- Limite : les notifications push du site ne passent pas par l'application (garde la version navigateur/PWA si tu en as besoin).
+
+**Compiler soi-même :** JDK 17+ et SDK Android (plateforme 35), puis :
+
+```bash
+cd android
+./gradlew assembleRelease
+# -> android/app/build/outputs/apk/release/app-release.apk
+```
+
+Le script injecté est copié automatiquement depuis `wiki-masters-prix-moyen.user.js` : une seule source à modifier.
+
+## Option 2 : userscript dans Firefox
 
 Chrome pour Android n'accepte pas les extensions. Il faut un navigateur qui les accepte :
 

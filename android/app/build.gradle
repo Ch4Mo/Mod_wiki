@@ -1,0 +1,58 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.mod_wiki.prixmoyen'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.mod_wiki.prixmoyen'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '1.0.0'
+    }
+
+    // Clé de signature fixe (non secrète) pour que chaque nouvelle version
+    // s'installe par-dessus l'ancienne sans devoir désinstaller.
+    signingConfigs {
+        perso {
+            storeFile file('signature.keystore')
+            storePassword 'prixmoyen'
+            keyAlias 'prixmoyen'
+            keyPassword 'prixmoyen'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.perso
+        }
+        debug {
+            signingConfig signingConfigs.perso
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main.assets.srcDirs += "$buildDir/generated/userscript"
+    }
+}
+
+// Copie le userscript du dépôt dans les assets : une seule source à maintenir.
+def copyUserscript = tasks.register('copyUserscript', Copy) {
+    from(rootProject.file('../wiki-masters-prix-moyen.user.js'))
+    into("$buildDir/generated/userscript")
+    rename { 'prix-moyen.js' }
+}
+tasks.named('preBuild') { dependsOn copyUserscript }
+
+dependencies {
+    implementation 'androidx.webkit:webkit:1.12.1'
+}

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Prix moyen sur les cartes
 // @namespace    https://github.com/ch4mo/mod_wiki
-// @version      1.0.0
+// @version      1.0.1
 // @description  Affiche le prix de vente moyen du marché directement sur chaque carte de la collection.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -14,6 +14,8 @@
 
   // Le script doit tourner dans le contexte de la page pour lire les réponses de fetch().
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+  if (W.__wmPrixMoyen) return; // déjà injecté (application Android + userscript)
+  W.__wmPrixMoyen = true;
 
   const CACHE_KEY = 'wmPrixMoyenCache.v1';
   const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 h

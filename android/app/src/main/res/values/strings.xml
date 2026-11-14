@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">WikiMasters Prix</string>
+    <string name="error_offline">Impossible de charger WikiMasters. Vérifie ta connexion puis touche pour réessayer.</string>
+</resources>
