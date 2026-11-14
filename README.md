@@ -54,13 +54,15 @@ Chrome pour Android n'accepte pas les extensions. Il faut un navigateur qui les 
 - Le script lit la liste des cartes que le site charge déjà (`/api/my-collection`) pour connaître l'identifiant de chaque carte affichée.
 - Pour chaque carte **visible à l'écran**, il interroge la même source que la fenêtre « Mettre aux enchères » :
   `/api/marketplace/cards/<id>/sales?scope=summary`, puis garde la moyenne correspondant à la rareté de la carte.
-- Requêtes limitées (2 en parallèle, pause de 250 ms) pour ne pas surcharger le site.
+- Requêtes limitées (2 en parallèle, pause de 250 ms) pour ne pas surcharger le site. Si tu fais défiler vite, les cartes à l'écran passent devant celles déjà dépassées.
+- **Si le site limite le nombre de requêtes** (« trop de requêtes ») : tout s'arrête quelques secondes (pause doublée à chaque refus, jusqu'à 2 min), le rythme ralentit puis réaccélère de lui-même, et les cartes refusées sont **redemandées automatiquement** (leur pastille reste sur « … » en attendant).
 - Les prix sont gardés en mémoire **7 jours** ; recharger la page ne refait pas les requêtes.
-- **Actualisation de fond** : tant que le site est ouvert (n'importe quelle page, sans faire défiler), le script parcourt toute la collection et récupère les prix manquants ou de plus de 7 jours, **1 carte toutes les 2 secondes**. Une petite pastille « ⟳ Prix 1 234 / 8 700 » en bas de l'écran indique la progression ; elle disparaît quand tout est à jour.
+- **Actualisation de fond** : tant que le site est ouvert (n'importe quelle page, sans faire défiler), le script parcourt toute la collection et récupère les prix manquants ou de plus de 7 jours, **1 carte toutes les 2 secondes**. Une petite pastille « ⟳ Prix 1 234 / 8 644 » en bas de l'écran indique la progression ; elle disparaît quand tout est à jour. Le total compte les **cartes différentes** (une carte en 3 exemplaires compte pour 1, puisqu'elle a un seul prix).
   - Les cartes affichées à l'écran restent prioritaires.
   - La progression est conservée : si tu fermes l'application, elle reprend où elle en était à la prochaine ouverture.
-  - La liste des cartes est relue une fois par jour (pour inclure les nouvelles).
-  - En cas d'erreur ou de « trop de requêtes », elle ralentit automatiquement (jusqu'à 5 min de pause) ; si tu es déconnecté, elle s'arrête.
+  - **Nouvelles cartes** (paquets ouverts) : toutes les 10 min, le script compare le nombre de cartes du compte à celui de sa liste (il le vérifie aussi dès que la page Collection s'affiche). S'il a changé, il relit seulement les premières pages triées par date d'ajout, puis récupère en priorité les prix des nouvelles cartes.
+  - La liste complète est relue une fois par semaine (pour retirer les cartes vendues ou défaussées).
+  - Elle respecte les mêmes pauses quand le site freine ; si tu es déconnecté, elle s'arrête.
 
 Le script ne fait que lire : il n'achète, ne vend ni ne modifie rien sur ton compte. Il ne contient et ne transmet aucun identifiant ; il utilise simplement ta session déjà ouverte sur le site.
 
@@ -74,7 +76,9 @@ En haut du script :
 | `BG_ENABLED` | `true` | Active l'actualisation de fond |
 | `BG_DELAY_MS` | 2000 | Pause entre deux requêtes de l'actualisation de fond |
 | `MAX_PARALLEL` | 2 | Requêtes simultanées max |
-| `DELAY_MS` | 250 | Pause entre deux requêtes |
+| `DELAY_MS` | 250 | Pause minimale entre deux requêtes |
+| `PAUSE_MIN_MS` / `PAUSE_MAX_MS` | 5 s / 2 min | Pause après un refus « trop de requêtes » |
+| `BG_RECHECK_MS` | 10 min | Vérification des nouvelles cartes |
 
 ## Si ça ne marche plus
 

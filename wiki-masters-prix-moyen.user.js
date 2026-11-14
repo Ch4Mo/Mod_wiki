@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Prix moyen sur les cartes
 // @namespace    https://github.com/ch4mo/mod_wiki
-// @version      1.2.0
+// @version      1.3.0
 // @description  Affiche le prix de vente moyen du marché directement sur chaque carte de la collection.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -20,17 +20,23 @@
   const CACHE_KEY = 'wmPrixMoyenCache.v1';
   const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 jours
   const MAX_PARALLEL = 2;                  // requêtes simultanées max (cartes à l'écran)
-  const DELAY_MS = 250;                    // pause entre deux requêtes (cartes à l'écran)
+  const DELAY_MS = 250;                    // pause minimale entre deux requêtes (cartes à l'écran)
+  const MAX_DELAY_MS = 3000;               // pause maximale quand le site freine
+  const PAUSE_MIN_MS = 5000;               // pause après un refus « trop de requêtes »…
+  const PAUSE_MAX_MS = 120000;             // …doublée à chaque refus, jusqu'à 2 min
+  const MAX_RETRIES = 8;                   // essais max pour une carte affichée
 
   // Actualisation de fond : parcourt toute la collection tranquillement.
   const BG_ENABLED = true;
-  const BG_DELAY_MS = 2000;                  // 1 requête toutes les 2 s
-  const BG_LIST_TTL_MS = 24 * 60 * 60 * 1000; // relit la liste des cartes 1 fois par jour
-  const BG_RECHECK_MS = 60 * 60 * 1000;      // revérifie toutes les heures quand tout est à jour
-  const BG_START_DELAY_MS = 5000;            // laisse le site se charger d'abord
-  const LIST_KEY = 'wmPrixMoyenListe.v1';
+  const BG_DELAY_MS = 2000;                        // 1 requête toutes les 2 s
+  const BG_FULL_LIST_TTL_MS = 7 * 24 * 60 * 60 * 1000; // relecture complète de la liste 1 fois par semaine
+  const BG_RECHECK_MS = 10 * 60 * 1000;            // vérifie les nouvelles cartes toutes les 10 min
+  const BG_START_DELAY_MS = 5000;                  // laisse le site se charger d'abord
+  const LIST_KEY = 'wmPrixMoyenListe.v2';
   const LOCK_KEY = 'wmPrixMoyenVerrou.v1';
   const RARITIES = ['L', 'UR', 'SR', 'R', 'PC', 'C'];
+
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   // ---------- Cache des prix (localStorage) ----------
   let cache = {};
@@ -51,21 +57,48 @@
     return e && Date.now() - e.t < CACHE_TTL_MS ? e : null;
   }
 
+  // ---------- Liste de toutes les cartes (différentes) de la collection ----------
+  // { full: date de la dernière relecture complète, total: nombre de cartes annoncé par le site
+  //   lors de la dernière synchro, ids: [...] } — les plus récentes en premier.
+  let cardList = null;
+  try {
+    const l = JSON.parse(W.localStorage.getItem(LIST_KEY) || 'null');
+    if (l && Array.isArray(l.ids)) cardList = { full: l.full || 0, total: l.total, ids: l.ids };
+  } catch (_) { /* ignore */ }
+  let cardSet = new Set(cardList ? cardList.ids : []);
+  function saveList() {
+    try { W.localStorage.setItem(LIST_KEY, JSON.stringify(cardList)); } catch (_) { /* ignore */ }
+  }
+  // Ajoute en tête de liste les cartes inconnues (ex. : nouvelles cartes vues par le site).
+  function addToList(ids) {
+    if (!cardList) return 0;
+    const fresh = ids.filter(id => !cardSet.has(id));
+    if (!fresh.length) return 0;
+    for (const id of fresh) cardSet.add(id);
+    cardList.ids = fresh.concat(cardList.ids);
+    saveList();
+    return fresh.length;
+  }
+
   // ---------- Correspondance "titre|rareté" -> id de carte ----------
   // Rempli en lisant les réponses de /api/my-collection que le site charge lui-même.
   const index = new Map();
   function learnCollection(json) {
     const list = json && Array.isArray(json.collection) ? json.collection : null;
-    if (!list) return;
+    if (!list) return [];
+    const ids = [];
     for (const item of list) {
       const c = item && item.card;
-      if (!c || !c.id || !c.wikipedia_title) continue;
+      if (!c || !c.id) continue;
+      ids.push(c.id);
+      if (!c.wikipedia_title) continue;
       const key = c.wikipedia_title + '|' + c.rarity;
       const arr = index.get(key) || [];
       if (!arr.some(x => x.id === c.id)) arr.push({ id: c.id, img: c.image_url || '' });
       index.set(key, arr);
     }
     scan();
+    return ids;
   }
 
   const origFetch = W.fetch;
@@ -74,23 +107,41 @@
     try {
       const url = typeof input === 'string' ? input : (input && input.url) || '';
       if (/\/api\/my-collection(\?|$)/.test(url)) {
-        p.then(r => r.clone().json()).then(learnCollection).catch(() => {});
+        p.then(r => r.clone().json()).then(json => {
+          if (addToList(learnCollection(json))) wakeBackground();
+        }).catch(() => {});
+      } else if (/\/api\/my-collection\/stats\?/.test(url) && !/[?&](rarity|q|tag_id|untagged|wishlisted_by)=/.test(url)) {
+        // Le site affiche ses statistiques : si le nombre de cartes a changé, on resynchronise.
+        p.then(r => r.clone().json()).then(json => {
+          if (json && typeof json.totalUnique === 'number' && (!cardList || json.totalUnique !== cardList.total)) wakeBackground();
+        }).catch(() => {});
       }
     } catch (_) { /* ne jamais casser le site */ }
     return p;
   };
 
-  // ---------- File de requêtes vers le marché ----------
-  const queue = [];
-  const pending = new Map(); // cardId -> Promise
-  let active = 0;
+  // ---------- Limitation du débit (commune aux cartes affichées et à la tâche de fond) ----------
+  // Quand le site répond « trop de requêtes » (429), tout le monde fait une pause qui double à
+  // chaque nouveau refus ; le rythme des cartes affichées ralentit aussi, puis réaccélère.
+  let pauseUntil = 0;
+  let pauseLen = PAUSE_MIN_MS;
+  let visibleDelay = DELAY_MS;
 
-  function fetchAverage(cardId) {
-    if (pending.has(cardId)) return pending.get(cardId);
-    const pr = new Promise(resolve => queue.push({ cardId, resolve }));
-    pending.set(cardId, pr);
-    pump();
-    return pr;
+  const isRetryable = status => status === 0 || status === 429 || status >= 500;
+
+  function noteResult(status) {
+    if (isRetryable(status)) {
+      pauseUntil = Date.now() + pauseLen;
+      pauseLen = Math.min(pauseLen * 2, PAUSE_MAX_MS);
+      visibleDelay = Math.min(visibleDelay * 2, MAX_DELAY_MS);
+    } else {
+      pauseLen = PAUSE_MIN_MS;
+      visibleDelay = Math.max(DELAY_MS, Math.round(visibleDelay * 0.9));
+    }
+  }
+
+  async function waitPause() {
+    while (Date.now() < pauseUntil) await sleep(pauseUntil - Date.now());
   }
 
   // Interroge le marché pour une carte. Résout { entry, status } (entry = null en cas d'échec).
@@ -105,17 +156,42 @@
           return { entry, status: r.status };
         });
       })
-      .catch(() => ({ entry: null, status: 0 }));
+      .catch(() => ({ entry: null, status: 0 }))
+      .then(res => { noteResult(res.status); return res; });
+  }
+
+  // ---------- File des cartes affichées ----------
+  const queue = [];
+  const pending = new Map(); // cardId -> Promise
+  let active = 0;
+  let pumpTimer = null;
+
+  function fetchAverage(cardId) {
+    if (pending.has(cardId)) return pending.get(cardId);
+    const pr = new Promise(resolve => queue.push({ cardId, resolve, tries: 0 }));
+    pending.set(cardId, pr);
+    pump();
+    return pr;
   }
 
   function pump() {
-    while (active < MAX_PARALLEL && queue.length) {
-      const job = queue.shift();
+    if (Date.now() < pauseUntil) { // le site freine : on attend la fin de la pause
+      if (!pumpTimer) pumpTimer = setTimeout(() => { pumpTimer = null; pump(); }, pauseUntil - Date.now());
+      return;
+    }
+    const parallel = visibleDelay > DELAY_MS * 2 ? 1 : MAX_PARALLEL; // une seule à la fois si le site freine
+    while (active < parallel && queue.length && Date.now() >= pauseUntil) {
+      // Dernière carte demandée d'abord : en défilant vite, celles à l'écran passent devant.
+      const job = queue.pop();
       active++;
       requestSummary(job.cardId).then(res => {
-        job.resolve(res.entry);
-        pending.delete(job.cardId);
-        setTimeout(() => { active--; pump(); }, DELAY_MS);
+        if (!res.entry && isRetryable(res.status) && ++job.tries < MAX_RETRIES) {
+          queue.unshift(job); // on la redemandera après la pause (prix toujours « … »)
+        } else {
+          pending.delete(job.cardId);
+          job.resolve(res.entry);
+        }
+        setTimeout(() => { active--; pump(); }, visibleDelay);
       });
     }
   }
@@ -123,9 +199,10 @@
   // ---------- Actualisation de fond ----------
   // Tourne tant que le site est ouvert (pas besoin de faire défiler). La progression est
   // conservée : si l'application est fermée, elle reprend là où elle en était.
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
   const tabId = Math.random().toString(36).slice(2);
-  let bgBackoff = BG_DELAY_MS;
+  let bgRunning = false;
+  let bgTimer = null;
+  let bgResync = false;
 
   function takeLock() {
     // Évite deux actualisations en parallèle (plusieurs onglets).
@@ -137,70 +214,132 @@
     } catch (_) { return true; }
   }
 
-  function loadList() {
-    try {
-      const l = JSON.parse(W.localStorage.getItem(LIST_KEY) || 'null');
-      return l && Array.isArray(l.ids) && Date.now() - l.t < BG_LIST_TTL_MS ? l.ids : null;
-    } catch (_) { return null; }
+  // Relance la tâche de fond rapidement (nouvelles cartes détectées).
+  function wakeBackground() {
+    if (!BG_ENABLED) return;
+    if (bgRunning) { bgResync = true; return; }
+    clearTimeout(bgTimer);
+    bgTimer = setTimeout(backgroundRefresh, 1000);
   }
 
-  // Attend que les cartes affichées à l'écran soient servies en priorité.
+  // Attend que les cartes affichées soient servies en priorité et que le site ne freine plus.
   async function waitIdle() {
-    while (queue.length || active) await sleep(500);
+    while (queue.length || active || Date.now() < pauseUntil) {
+      await waitPause();
+      if (queue.length || active) await sleep(500);
+    }
+  }
+
+  // Requête de lecture vers le site, avec réessai si le site freine. null = abandon (déconnecté…).
+  async function getJson(url) {
+    for (let tries = 0; tries < 10; tries++) {
+      if (!takeLock()) return null;
+      await waitIdle();
+      let res;
+      try { res = await origFetch.call(W, url, { credentials: 'include' }); } catch (_) { res = { status: 0, ok: false }; }
+      noteResult(res.status);
+      if (res.status === 401 || res.status === 403) return null; // pas connecté
+      if (!res.ok) { if (isRetryable(res.status)) continue; return null; }
+      return res.json().catch(() => null);
+    }
+    return null;
+  }
+
+  async function fetchStats() {
+    const json = await getJson('/api/my-collection/stats?sort=added');
+    return json && typeof json.totalUnique === 'number' ? json.totalUnique : null;
+  }
+
+  // Lit une page de la collection, triée par date d'ajout. Renvoie la liste des ids, ou null.
+  async function readPage(page) {
+    const json = await getJson('/api/my-collection?sort=added&page=' + page + '&stats=0');
+    if (!json || !Array.isArray(json.collection)) return null; // réponse inattendue (déconnecté ?)
+    return learnCollection(json);
   }
 
   async function readWholeCollection() {
-    const ids = new Set();
+    const total = await fetchStats();
+    const ids = [];
+    const seen = new Set();
     for (let page = 0; page < 1000; page++) {
-      if (!takeLock()) return null;
-      await waitIdle();
       showProgress('Liste des cartes… page ' + (page + 1));
-      let res;
-      try { res = await origFetch.call(W, '/api/my-collection?sort=rarity&page=' + page + '&stats=0', { credentials: 'include' }); }
-      catch (_) { return null; }
-      if (res.status === 401 || res.status === 403) return null; // pas connecté
-      if (!res.ok) { await sleep(bgBackoff = Math.min(bgBackoff * 2, 300000)); page--; continue; }
-      bgBackoff = BG_DELAY_MS;
-      const json = await res.json().catch(() => null);
-      if (!json || !Array.isArray(json.collection)) return null; // réponse inattendue (déconnecté ?)
-      const list = json.collection;
-      learnCollection(json);
-      const before = ids.size;
-      for (const it of list) if (it && it.card && it.card.id) ids.add(it.card.id);
-      if (!list.length || ids.size === before) break; // dernière page atteinte
+      const got = await readPage(page);
+      if (!got) return false;
+      const before = seen.size;
+      for (const id of got) if (!seen.has(id)) { seen.add(id); ids.push(id); }
+      if (!got.length || seen.size === before) break; // dernière page atteinte
       await sleep(BG_DELAY_MS);
     }
-    const arr = [...ids];
-    try { W.localStorage.setItem(LIST_KEY, JSON.stringify({ t: Date.now(), ids: arr })); } catch (_) {}
-    return arr;
+    cardList = { full: Date.now(), total, ids };
+    cardSet = seen;
+    saveList();
+    return true;
+  }
+
+  // Ne relit que les premières pages (cartes les plus récentes) jusqu'à ne plus rien trouver de neuf.
+  // Renvoie le nombre de cartes ajoutées, ou null en cas d'échec.
+  async function readNewCards() {
+    let added = 0;
+    for (let page = 0; page < 1000; page++) {
+      showProgress('Nouvelles cartes… page ' + (page + 1));
+      const got = await readPage(page);
+      if (!got) return null;
+      const n = got.length ? addToList(got) : 0;
+      added += n;
+      if (!n) break;
+      await sleep(BG_DELAY_MS);
+    }
+    return added;
+  }
+
+  // Met la liste à jour : relecture complète 1 fois par semaine, sinon seulement les nouveautés.
+  async function syncList() {
+    if (!cardList || Date.now() - cardList.full > BG_FULL_LIST_TTL_MS) return readWholeCollection();
+    const total = await fetchStats();
+    if (total == null) return false;
+    if (total === cardList.total) return true; // rien de changé
+    // Le nombre a changé : on lit les cartes les plus récentes. (Les cartes vendues ou
+    // défaussées restent dans la liste jusqu'à la relecture complète hebdomadaire : sans gravité.)
+    if (total > (cardList.total || 0)) {
+      const added = await readNewCards();
+      if (added == null) return false;
+      if (!added) return readWholeCollection(); // rien trouvé en tête de liste : relecture complète
+    }
+    cardList.total = total;
+    saveList();
+    return true;
   }
 
   async function backgroundRefresh() {
+    if (bgRunning) return;
+    bgRunning = true;
+    clearTimeout(bgTimer);
     try {
-      if (!takeLock()) return;
-      const ids = loadList() || await readWholeCollection();
-      if (!ids) return;
-      const total = ids.length;
-      let todo = ids.filter(id => !cached(id));
-      for (let i = 0; i < todo.length; i++) {
+      do {
+        bgResync = false;
         if (!takeLock()) return;
-        await waitIdle();
-        if (cached(todo[i])) continue; // déjà récupéré entre-temps (carte affichée)
-        showProgress('Prix ' + (total - todo.length + i).toLocaleString('fr-FR') + ' / ' + total.toLocaleString('fr-FR'));
-        const res = await requestSummary(todo[i]);
-        if (res.status === 401 || res.status === 403) return; // déconnecté : on arrête
-        const retry = res.status === 0 || res.status === 429 || res.status >= 500;
-        if (!res.entry && retry) { // réseau coupé ou trop de requêtes : on ralentit puis on réessaie
-          bgBackoff = Math.min(bgBackoff * 2, 300000);
-          i--;
-        } else { // succès, ou erreur propre à cette carte : on passe à la suivante
-          bgBackoff = BG_DELAY_MS;
+        if (!await syncList()) return;
+        const failed = new Set(); // cartes en erreur définitive pour ce passage
+        for (;;) {
+          if (bgResync) break; // nouvelles cartes détectées : on resynchronise d'abord
+          if (!takeLock()) return;
+          await waitIdle();
+          const ids = cardList.ids;
+          const next = ids.find(id => !cached(id) && !failed.has(id));
+          if (!next) break;
+          const done = ids.reduce((n, id) => n + (cached(id) ? 1 : 0), 0);
+          showProgress('Prix ' + done.toLocaleString('fr-FR') + ' / ' + ids.length.toLocaleString('fr-FR'));
+          const res = await requestSummary(next);
+          if (res.status === 401 || res.status === 403) return; // déconnecté : on arrête
+          if (!res.entry && !isRetryable(res.status)) failed.add(next); // erreur propre à cette carte
+          await sleep(BG_DELAY_MS); // (en cas de « trop de requêtes », waitIdle attend la pause)
         }
-        await sleep(bgBackoff);
-      }
+      } while (bgResync);
     } finally {
+      bgRunning = false;
       showProgress(null);
-      setTimeout(backgroundRefresh, BG_RECHECK_MS);
+      clearTimeout(bgTimer);
+      bgTimer = setTimeout(backgroundRefresh, BG_RECHECK_MS);
     }
   }
 
@@ -295,7 +434,13 @@
     b.className = 'wm-prix wm-charge';
     b.textContent = 'Ⓦ …';
     fetchAverage(info.id).then(entry => {
-      if (cardEl.dataset.wmKey === info.key) render(cardEl, info.rarity, entry);
+      if (cardEl.dataset.wmKey !== info.key) return;
+      render(cardEl, info.rarity, entry);
+      if (!entry) { // échec : on retentera quand la carte sera de nouveau visible
+        setTimeout(() => {
+          if (cardEl.dataset.wmKey === info.key) { cardEl.dataset.wmKey = ''; scheduleScan(); }
+        }, 30000);
+      }
     });
   }
 
@@ -323,7 +468,7 @@
     injectStyle();
     new MutationObserver(scheduleScan).observe(document.body, { childList: true, subtree: true, characterData: true });
     scan();
-    if (BG_ENABLED) setTimeout(backgroundRefresh, BG_START_DELAY_MS);
+    if (BG_ENABLED) bgTimer = setTimeout(backgroundRefresh, BG_START_DELAY_MS);
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
