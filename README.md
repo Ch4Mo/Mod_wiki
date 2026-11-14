@@ -55,7 +55,7 @@ Chrome pour Android n'accepte pas les extensions. Il faut un navigateur qui les 
 - Pour chaque carte **visible à l'écran**, il interroge la même source que la fenêtre « Mettre aux enchères » :
   `/api/marketplace/cards/<id>/sales?scope=summary`, puis garde la moyenne correspondant à la rareté de la carte.
 - Requêtes limitées (2 en parallèle, pause de 250 ms) pour ne pas surcharger le site.
-- Les prix sont gardés en mémoire **6 heures** dans le navigateur ; recharger la page ne refait pas les requêtes.
+- Les prix sont gardés en mémoire **24 heures** dans le navigateur ; recharger la page ne refait pas les requêtes.
 
 Le script ne fait que lire : il n'achète, ne vend ni ne modifie rien sur ton compte. Il ne contient et ne transmet aucun identifiant ; il utilise simplement ta session déjà ouverte sur le site.
 
@@ -65,7 +65,7 @@ En haut du script :
 
 | Constante | Défaut | Rôle |
 |---|---|---|
-| `CACHE_TTL_MS` | 6 h | Durée de conservation des prix |
+| `CACHE_TTL_MS` | 24 h | Durée de conservation des prix |
 | `MAX_PARALLEL` | 2 | Requêtes simultanées max |
 | `DELAY_MS` | 250 | Pause entre deux requêtes |
 

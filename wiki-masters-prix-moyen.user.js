@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Prix moyen sur les cartes
 // @namespace    https://github.com/ch4mo/mod_wiki
-// @version      1.0.1
+// @version      1.1.0
 // @description  Affiche le prix de vente moyen du marché directement sur chaque carte de la collection.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -18,7 +18,7 @@
   W.__wmPrixMoyen = true;
 
   const CACHE_KEY = 'wmPrixMoyenCache.v1';
-  const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 h
+  const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
   const MAX_PARALLEL = 2;                  // requêtes simultanées max
   const DELAY_MS = 250;                    // pause entre deux requêtes
   const RARITIES = ['L', 'UR', 'SR', 'R', 'PC', 'C'];
@@ -26,6 +26,10 @@
   // ---------- Cache des prix (localStorage) ----------
   let cache = {};
   try { cache = JSON.parse(W.localStorage.getItem(CACHE_KEY) || '{}'); } catch (_) { cache = {}; }
+  // Supprime les prix expirés pour que le stockage ne grossisse pas indéfiniment.
+  for (const id of Object.keys(cache)) {
+    if (!cache[id] || Date.now() - cache[id].t >= CACHE_TTL_MS) delete cache[id];
+  }
   let saveTimer = null;
   function saveCache() {
     clearTimeout(saveTimer);
