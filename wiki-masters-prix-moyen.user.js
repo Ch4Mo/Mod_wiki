@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Prix moyen sur les cartes
 // @namespace    https://github.com/ch4mo/mod_wiki
-// @version      1.3.0
+// @version      1.3.1
 // @description  Affiche le prix de vente moyen du marché directement sur chaque carte de la collection.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -101,11 +101,26 @@
     return ids;
   }
 
+  // Après une action sur le site (ouverture de paquet, vente, défausse…), on revérifie le
+  // nombre de cartes : une seule petite requête, la liste n'est relue que s'il a changé.
+  const IGNORED_ACTIONS = /\/api\/(notifications|push|image-report|cards\/[^/]+\/image-report|auth|human-check|broadcast)/;
+  let actionTimer = null;
+  function onSiteAction(url) {
+    if (IGNORED_ACTIONS.test(url)) return;
+    clearTimeout(actionTimer);
+    actionTimer = setTimeout(wakeBackground, 3000);
+  }
+
   const origFetch = W.fetch;
   W.fetch = function (input, init) {
     const p = origFetch.apply(this, arguments);
     try {
-      const url = typeof input === 'string' ? input : (input && input.url) || '';
+      const url = typeof input === 'string' ? input : (input && input.url) || String(input || '');
+      const method = ((init && init.method) || (input && typeof input === 'object' && input.method) || 'GET').toUpperCase();
+      const sameSite = url.startsWith('/') || /^https:\/\/(www\.)?wiki-masters\.com\//.test(url);
+      if (method !== 'GET' && sameSite) {
+        p.then(r => { if (r.ok) onSiteAction(url); }).catch(() => {});
+      }
       if (/\/api\/my-collection(\?|$)/.test(url)) {
         p.then(r => r.clone().json()).then(json => {
           if (addToList(learnCollection(json))) wakeBackground();

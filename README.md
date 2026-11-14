@@ -60,7 +60,7 @@ Chrome pour Android n'accepte pas les extensions. Il faut un navigateur qui les 
 - **Actualisation de fond** : tant que le site est ouvert (n'importe quelle page, sans faire défiler), le script parcourt toute la collection et récupère les prix manquants ou de plus de 7 jours, **1 carte toutes les 2 secondes**. Une petite pastille « ⟳ Prix 1 234 / 8 644 » en bas de l'écran indique la progression ; elle disparaît quand tout est à jour. Le total compte les **cartes différentes** (une carte en 3 exemplaires compte pour 1, puisqu'elle a un seul prix).
   - Les cartes affichées à l'écran restent prioritaires.
   - La progression est conservée : si tu fermes l'application, elle reprend où elle en était à la prochaine ouverture.
-  - **Nouvelles cartes** (paquets ouverts) : toutes les 10 min, le script compare le nombre de cartes du compte à celui de sa liste (il le vérifie aussi dès que la page Collection s'affiche). S'il a changé, il relit seulement les premières pages triées par date d'ajout, puis récupère en priorité les prix des nouvelles cartes.
+  - **Nouvelles cartes** (paquets ouverts) : le script compare le nombre de cartes du compte à celui de sa liste **3 s après chaque action sur le site** (ouverture de paquet, vente, défausse…), dès que la page Collection s'affiche, et sinon toutes les 10 min. S'il a changé, il relit seulement les premières pages triées par date d'ajout, puis récupère en priorité les prix des nouvelles cartes.
   - La liste complète est relue une fois par semaine (pour retirer les cartes vendues ou défaussées).
   - Elle respecte les mêmes pauses quand le site freine ; si tu es déconnecté, elle s'arrête.
 
