@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Prix moyen sur les cartes
 // @namespace    https://github.com/ch4mo/mod_wiki
-// @version      1.3.1
+// @version      1.4.0
 // @description  Affiche le prix de vente moyen du marché directement sur chaque carte de la collection.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -253,10 +253,13 @@
       let res;
       try { res = await origFetch.call(W, url, { credentials: 'include' }); } catch (_) { res = { status: 0, ok: false }; }
       noteResult(res.status);
-      if (res.status === 401 || res.status === 403) return null; // pas connecté
-      if (!res.ok) { if (isRetryable(res.status)) continue; return null; }
-      return res.json().catch(() => null);
+      if (res.status === 401 || res.status === 403) { lastError = 'connecte-toi'; return null; }
+      if (!res.ok) { if (isRetryable(res.status)) continue; lastError = 'erreur ' + res.status; return null; }
+      const json = await res.json().catch(() => null);
+      if (!json) lastError = 'réponse inattendue';
+      return json;
     }
+    lastError = 'site indisponible';
     return null;
   }
 
@@ -277,7 +280,7 @@
     const ids = [];
     const seen = new Set();
     for (let page = 0; page < 1000; page++) {
-      showProgress('Liste des cartes… page ' + (page + 1));
+      setStatus('list', page + 1);
       const got = await readPage(page);
       if (!got) return false;
       const before = seen.size;
@@ -296,7 +299,7 @@
   async function readNewCards() {
     let added = 0;
     for (let page = 0; page < 1000; page++) {
-      showProgress('Nouvelles cartes… page ' + (page + 1));
+      setStatus('new', page + 1);
       const got = await readPage(page);
       if (!got) return null;
       const n = got.length ? addToList(got) : 0;
@@ -329,45 +332,82 @@
     if (bgRunning) return;
     bgRunning = true;
     clearTimeout(bgTimer);
+    let outcome = 'error';
     try {
       do {
         bgResync = false;
-        if (!takeLock()) return;
+        if (!takeLock()) { outcome = 'other'; return; }
         if (!await syncList()) return;
+        setStatus('prices');
         const failed = new Set(); // cartes en erreur définitive pour ce passage
         for (;;) {
           if (bgResync) break; // nouvelles cartes détectées : on resynchronise d'abord
-          if (!takeLock()) return;
+          if (!takeLock()) { outcome = 'other'; return; }
           await waitIdle();
           const ids = cardList.ids;
           const next = ids.find(id => !cached(id) && !failed.has(id));
           if (!next) break;
-          const done = ids.reduce((n, id) => n + (cached(id) ? 1 : 0), 0);
-          showProgress('Prix ' + done.toLocaleString('fr-FR') + ' / ' + ids.length.toLocaleString('fr-FR'));
           const res = await requestSummary(next);
-          if (res.status === 401 || res.status === 403) return; // déconnecté : on arrête
+          if (res.status === 401 || res.status === 403) { lastError = 'connecte-toi'; return; } // déconnecté : on arrête
           if (!res.entry && !isRetryable(res.status)) failed.add(next); // erreur propre à cette carte
           await sleep(BG_DELAY_MS); // (en cas de « trop de requêtes », waitIdle attend la pause)
         }
       } while (bgResync);
+      outcome = 'done';
     } finally {
       bgRunning = false;
-      showProgress(null);
+      setStatus(outcome);
       clearTimeout(bgTimer);
       bgTimer = setTimeout(backgroundRefresh, BG_RECHECK_MS);
     }
   }
 
-  let progressEl = null;
-  function showProgress(text) {
+  // ---------- Compteur en bas de l'écran (toujours visible) ----------
+  // États : list / new (lecture de la liste), prices (récupération), done (à jour),
+  // error (synchro impossible), other (un autre onglet s'en occupe).
+  let bgState = 'start';
+  let bgPage = 0;
+  let lastError = '';
+  let counterEl = null;
+  const fmt = n => n.toLocaleString('fr-FR');
+
+  function setStatus(state, page) {
+    bgState = state;
+    if (page) bgPage = page;
+    if (state !== 'error') lastError = state === 'done' ? '' : lastError;
+    renderCounter();
+  }
+
+  function renderCounter() {
     if (!document.body) return;
-    if (!progressEl) {
-      progressEl = document.createElement('div');
-      progressEl.id = 'wm-prix-job';
-      document.body.appendChild(progressEl);
+    if (!counterEl || !counterEl.isConnected) {
+      counterEl = document.getElementById('wm-prix-job') || document.createElement('div');
+      counterEl.id = 'wm-prix-job';
+      document.body.appendChild(counterEl);
     }
-    progressEl.style.display = text ? '' : 'none';
-    if (text) progressEl.textContent = '⟳ ' + text;
+    let text, cls = '';
+    if (bgState === 'list' || bgState === 'new') {
+      text = '⟳ ' + (bgState === 'list' ? 'Liste des cartes' : 'Nouvelles cartes') + '… page ' + bgPage;
+    } else if (!cardList) {
+      text = bgState === 'error' ? '⚠ Prix : ' + (lastError || 'synchro impossible') : '⟳ Prix : démarrage…';
+      cls = bgState === 'error' ? 'wm-err' : '';
+    } else {
+      const ids = cardList.ids;
+      let done = 0;
+      for (const id of ids) if (cached(id)) done++;
+      const count = 'Prix ' + fmt(done) + ' / ' + fmt(ids.length);
+      if (Date.now() < pauseUntil) {
+        text = '⏸ ' + count + ' · le site freine';
+      } else if (bgState === 'error') {
+        text = '⚠ ' + count + ' · ' + (lastError || 'synchro impossible'); cls = 'wm-err';
+      } else if (done >= ids.length && !bgRunning) {
+        text = '✓ ' + count; cls = 'wm-ok';
+      } else {
+        text = '⟳ ' + count;
+      }
+    }
+    if (counterEl.textContent !== text) counterEl.textContent = text;
+    if (counterEl.className !== cls) counterEl.className = cls;
   }
 
   // ---------- Affichage ----------
@@ -381,7 +421,9 @@
     #wm-prix-job{position:fixed;left:50%;transform:translateX(-50%);
       bottom:calc(env(safe-area-inset-bottom, 0px) + 72px);z-index:2147483000;
       padding:2px 9px;border-radius:999px;font:600 11px/17px system-ui,sans-serif;
-      background:rgba(10,14,18,.75);color:#6ee7b7;pointer-events:none;opacity:.85}`;
+      background:rgba(10,14,18,.75);color:#6ee7b7;pointer-events:none;opacity:.85;white-space:nowrap}
+    #wm-prix-job.wm-ok{color:#9ca3af;opacity:.6}
+    #wm-prix-job.wm-err{color:#fbbf24}`;
   function injectStyle() {
     if (document.getElementById('wm-prix-style')) return;
     const s = document.createElement('style');
@@ -483,7 +525,11 @@
     injectStyle();
     new MutationObserver(scheduleScan).observe(document.body, { childList: true, subtree: true, characterData: true });
     scan();
-    if (BG_ENABLED) bgTimer = setTimeout(backgroundRefresh, BG_START_DELAY_MS);
+    if (BG_ENABLED) {
+      bgTimer = setTimeout(backgroundRefresh, BG_START_DELAY_MS);
+      renderCounter();
+      setInterval(renderCounter, 1500); // suit aussi les prix récupérés en faisant défiler
+    }
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();

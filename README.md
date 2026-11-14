@@ -57,7 +57,14 @@ Chrome pour Android n'accepte pas les extensions. Il faut un navigateur qui les 
 - Requêtes limitées (2 en parallèle, pause de 250 ms) pour ne pas surcharger le site. Si tu fais défiler vite, les cartes à l'écran passent devant celles déjà dépassées.
 - **Si le site limite le nombre de requêtes** (« trop de requêtes ») : tout s'arrête quelques secondes (pause doublée à chaque refus, jusqu'à 2 min), le rythme ralentit puis réaccélère de lui-même, et les cartes refusées sont **redemandées automatiquement** (leur pastille reste sur « … » en attendant).
 - Les prix sont gardés en mémoire **7 jours** ; recharger la page ne refait pas les requêtes.
-- **Actualisation de fond** : tant que le site est ouvert (n'importe quelle page, sans faire défiler), le script parcourt toute la collection et récupère les prix manquants ou de plus de 7 jours, **1 carte toutes les 2 secondes**. Une petite pastille « ⟳ Prix 1 234 / 8 644 » en bas de l'écran indique la progression ; elle disparaît quand tout est à jour. Le total compte les **cartes différentes** (une carte en 3 exemplaires compte pour 1, puisqu'elle a un seul prix).
+- **Actualisation de fond** : tant que le site est ouvert (n'importe quelle page, sans faire défiler), le script parcourt toute la collection et récupère les prix manquants ou de plus de 7 jours, **1 carte toutes les 2 secondes**. Un **compteur toujours visible** en bas de l'écran indique où elle en est :
+  - `⟳ Prix 1 234 / 8 644` : récupération en cours (cartes dont le prix est connu / total) ;
+  - `⟳ Liste des cartes… page 12` ou `⟳ Nouvelles cartes… page 1` : lecture de la collection ;
+  - `⏸ Prix 1 234 / 8 644 · le site freine` : pause imposée par le site, ça reprend tout seul ;
+  - `✓ Prix 8 644 / 8 644` (grisé) : tout est à jour ;
+  - `⚠ … · connecte-toi` / `synchro impossible` (orange) : la tâche de fond est bloquée.
+
+  Le total compte les **cartes différentes** (une carte en 3 exemplaires compte pour 1, puisqu'elle a un seul prix).
   - Les cartes affichées à l'écran restent prioritaires.
   - La progression est conservée : si tu fermes l'application, elle reprend où elle en était à la prochaine ouverture.
   - **Nouvelles cartes** (paquets ouverts) : le script compare le nombre de cartes du compte à celui de sa liste **3 s après chaque action sur le site** (ouverture de paquet, vente, défausse…), dès que la page Collection s'affiche, et sinon toutes les 10 min. S'il a changé, il relit seulement les premières pages triées par date d'ajout, puis récupère en priorité les prix des nouvelles cartes.
