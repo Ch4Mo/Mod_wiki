@@ -62,7 +62,7 @@ Chrome pour Android n'accepte pas les extensions. Il faut un navigateur qui les 
   - `⟳ Liste des cartes… page 12` ou `⟳ Nouvelles cartes… page 1` : lecture de la collection ;
   - `⏸ Prix 1 234 / 8 644 · le site freine` : pause imposée par le site, ça reprend tout seul ;
   - `✓ Prix 8 644 / 8 644` (grisé) : tout est à jour ;
-  - `⚠ … · connecte-toi` / `synchro impossible` (orange) : la tâche de fond est bloquée.
+  - `⚠ … · raison` (orange) : la mise à jour de la liste a échoué (ex. `connecte-toi`, `statistiques sans total`, `erreur 500 (my-collection)`). Les prix continuent d'être récupérés avec la liste déjà connue ; nouvel essai 10 min plus tard.
 
   Le total compte les **cartes différentes** (une carte en 3 exemplaires compte pour 1, puisqu'elle a un seul prix).
   - Les cartes affichées à l'écran restent prioritaires.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Prix moyen sur les cartes
 // @namespace    https://github.com/ch4mo/mod_wiki
-// @version      1.4.0
+// @version      1.4.1
 // @description  Affiche le prix de vente moyen du marché directement sur chaque carte de la collection.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -46,12 +46,15 @@
     if (!cache[id] || Date.now() - cache[id].t >= CACHE_TTL_MS) delete cache[id];
   }
   let saveTimer = null;
-  function saveCache() {
+  function flushCache() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      try { W.localStorage.setItem(CACHE_KEY, JSON.stringify(cache)); } catch (_) { /* stockage indisponible */ }
-    }, 500);
+    saveTimer = null;
+    try { W.localStorage.setItem(CACHE_KEY, JSON.stringify(cache)); } catch (_) { /* stockage indisponible */ }
   }
+  function saveCache() {
+    if (!saveTimer) saveTimer = setTimeout(flushCache, 500); // regroupe les écritures, au plus 0,5 s de retard
+  }
+  W.addEventListener('pagehide', flushCache); // ne rien perdre en changeant de page
   function cached(cardId) {
     const e = cache[cardId];
     return e && Date.now() - e.t < CACHE_TTL_MS ? e : null;
@@ -228,6 +231,14 @@
       return true;
     } catch (_) { return true; }
   }
+  // Libère le verrou en quittant la page, pour que la page suivante reprenne aussitôt.
+  W.addEventListener('pagehide', () => {
+    try {
+      const l = JSON.parse(W.localStorage.getItem(LOCK_KEY) || 'null');
+      if (l && l.id === tabId) W.localStorage.removeItem(LOCK_KEY);
+    } catch (_) { /* ignore */ }
+  });
+  let lockLost = false; // un autre onglet a pris la main : ce n'est pas une erreur
 
   // Relance la tâche de fond rapidement (nouvelles cartes détectées).
   function wakeBackground() {
@@ -248,30 +259,35 @@
   // Requête de lecture vers le site, avec réessai si le site freine. null = abandon (déconnecté…).
   async function getJson(url) {
     for (let tries = 0; tries < 10; tries++) {
-      if (!takeLock()) return null;
+      if (!takeLock()) { lockLost = true; return null; }
       await waitIdle();
       let res;
       try { res = await origFetch.call(W, url, { credentials: 'include' }); } catch (_) { res = { status: 0, ok: false }; }
       noteResult(res.status);
       if (res.status === 401 || res.status === 403) { lastError = 'connecte-toi'; return null; }
-      if (!res.ok) { if (isRetryable(res.status)) continue; lastError = 'erreur ' + res.status; return null; }
+      if (!res.ok) { if (isRetryable(res.status)) continue; lastError = 'erreur ' + res.status + ' (' + url.split('?')[0].replace('/api/', '') + ')'; return null; }
       const json = await res.json().catch(() => null);
-      if (!json) lastError = 'réponse inattendue';
+      if (!json) lastError = 'réponse illisible (' + url.split('?')[0].replace('/api/', '') + ')';
       return json;
     }
     lastError = 'site indisponible';
     return null;
   }
 
+  // Nombre de cartes différentes annoncé par le site (mêmes paramètres que la page Collection).
   async function fetchStats() {
-    const json = await getJson('/api/my-collection/stats?sort=added');
-    return json && typeof json.totalUnique === 'number' ? json.totalUnique : null;
+    const json = await getJson('/api/my-collection/stats?sort=rarity');
+    if (!json) return null;
+    const n = typeof json.totalUnique === 'number' ? json.totalUnique : typeof json.total === 'number' ? json.total : null;
+    if (n == null) lastError = 'statistiques sans total';
+    return n;
   }
 
   // Lit une page de la collection, triée par date d'ajout. Renvoie la liste des ids, ou null.
   async function readPage(page) {
     const json = await getJson('/api/my-collection?sort=added&page=' + page + '&stats=0');
-    if (!json || !Array.isArray(json.collection)) return null; // réponse inattendue (déconnecté ?)
+    if (!json) return null;
+    if (!Array.isArray(json.collection)) { lastError = 'format de collection inattendu'; return null; }
     return learnCollection(json);
   }
 
@@ -311,11 +327,28 @@
   }
 
   // Met la liste à jour : relecture complète 1 fois par semaine, sinon seulement les nouveautés.
+  // Renvoie true si on peut récupérer des prix (même avec une liste pas tout à fait à jour).
+  // syncProblem garde la raison d'un échec pour l'afficher, sans bloquer les prix.
+  let syncProblem = '';
   async function syncList() {
+    syncProblem = '';
+    const ok = await syncListInner();
+    if (ok) return true;
+    if (lockLost) return false;
+    syncProblem = lastError || 'synchro impossible';
+    return !!cardList; // on continue avec la liste qu'on a déjà
+  }
+
+  async function syncListInner() {
     if (!cardList || Date.now() - cardList.full > BG_FULL_LIST_TTL_MS) return readWholeCollection();
     const total = await fetchStats();
     if (total == null) return false;
     if (total === cardList.total) return true; // rien de changé
+    if (cardList.total == null) { // liste connue mais nombre jamais mémorisé : on le mémorise simplement
+      cardList.total = total;
+      saveList();
+      return true;
+    }
     // Le nombre a changé : on lit les cartes les plus récentes. (Les cartes vendues ou
     // défaussées restent dans la liste jusqu'à la relecture complète hebdomadaire : sans gravité.)
     if (total > (cardList.total || 0)) {
@@ -336,8 +369,9 @@
     try {
       do {
         bgResync = false;
+        lockLost = false;
         if (!takeLock()) { outcome = 'other'; return; }
-        if (!await syncList()) return;
+        if (!await syncList()) { if (lockLost) outcome = 'other'; return; }
         setStatus('prices');
         const failed = new Set(); // cartes en erreur définitive pour ce passage
         for (;;) {
@@ -353,12 +387,14 @@
           await sleep(BG_DELAY_MS); // (en cas de « trop de requêtes », waitIdle attend la pause)
         }
       } while (bgResync);
-      outcome = 'done';
+      outcome = syncProblem ? 'error' : 'done';
+      if (syncProblem) lastError = syncProblem;
     } finally {
       bgRunning = false;
       setStatus(outcome);
       clearTimeout(bgTimer);
-      bgTimer = setTimeout(backgroundRefresh, BG_RECHECK_MS);
+      // Si un autre onglet (ou la page précédente) tenait le verrou, on retente vite.
+      bgTimer = setTimeout(backgroundRefresh, outcome === 'other' ? 35000 : BG_RECHECK_MS);
     }
   }
 
@@ -389,7 +425,7 @@
     if (bgState === 'list' || bgState === 'new') {
       text = '⟳ ' + (bgState === 'list' ? 'Liste des cartes' : 'Nouvelles cartes') + '… page ' + bgPage;
     } else if (!cardList) {
-      text = bgState === 'error' ? '⚠ Prix : ' + (lastError || 'synchro impossible') : '⟳ Prix : démarrage…';
+      text = bgState === 'error' ? '⚠ Prix : ' + (lastError || 'synchro impossible') : bgState === 'other' ? '⟳ Prix : en attente…' : '⟳ Prix : démarrage…';
       cls = bgState === 'error' ? 'wm-err' : '';
     } else {
       const ids = cardList.ids;
