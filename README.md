@@ -55,7 +55,12 @@ Chrome pour Android n'accepte pas les extensions. Il faut un navigateur qui les 
 - Pour chaque carte **visible à l'écran**, il interroge la même source que la fenêtre « Mettre aux enchères » :
   `/api/marketplace/cards/<id>/sales?scope=summary`, puis garde la moyenne correspondant à la rareté de la carte.
 - Requêtes limitées (2 en parallèle, pause de 250 ms) pour ne pas surcharger le site.
-- Les prix sont gardés en mémoire **24 heures** dans le navigateur ; recharger la page ne refait pas les requêtes.
+- Les prix sont gardés en mémoire **7 jours** ; recharger la page ne refait pas les requêtes.
+- **Actualisation de fond** : tant que le site est ouvert (n'importe quelle page, sans faire défiler), le script parcourt toute la collection et récupère les prix manquants ou de plus de 7 jours, **1 carte toutes les 2 secondes**. Une petite pastille « ⟳ Prix 1 234 / 8 700 » en bas de l'écran indique la progression ; elle disparaît quand tout est à jour.
+  - Les cartes affichées à l'écran restent prioritaires.
+  - La progression est conservée : si tu fermes l'application, elle reprend où elle en était à la prochaine ouverture.
+  - La liste des cartes est relue une fois par jour (pour inclure les nouvelles).
+  - En cas d'erreur ou de « trop de requêtes », elle ralentit automatiquement (jusqu'à 5 min de pause) ; si tu es déconnecté, elle s'arrête.
 
 Le script ne fait que lire : il n'achète, ne vend ni ne modifie rien sur ton compte. Il ne contient et ne transmet aucun identifiant ; il utilise simplement ta session déjà ouverte sur le site.
 
@@ -65,7 +70,9 @@ En haut du script :
 
 | Constante | Défaut | Rôle |
 |---|---|---|
-| `CACHE_TTL_MS` | 24 h | Durée de conservation des prix |
+| `CACHE_TTL_MS` | 7 jours | Durée de conservation des prix |
+| `BG_ENABLED` | `true` | Active l'actualisation de fond |
+| `BG_DELAY_MS` | 2000 | Pause entre deux requêtes de l'actualisation de fond |
 | `MAX_PARALLEL` | 2 | Requêtes simultanées max |
 | `DELAY_MS` | 250 | Pause entre deux requêtes |
 
